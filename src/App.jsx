@@ -1,21 +1,37 @@
 import React, { useEffect, useMemo, useState } from "react";
 
-// ✅ 단일 파일 React 앱
-// - 로컬스토리지에 저장/로드
+// ✅ 단일 파일 React 앱 (+ 공유 링크 동기화)
+// - 로컬스토리지 저장/로드
 // - 운동법 추가/편집/삭제
-// - 검색, 정렬, 복사, JSON 내보내기/가져오기 지원
-// - 반응형 UI + Tailwind 클래스 사용
-// - 배포: 이 파일을 그대로 사용하거나 Vite/Next에서 임포트하여 사용
-
-// 데이터 모델
-// ExerciseItem = { id, title, content, caution, link, tags: string[], createdAt, updatedAt }
+// - 검색, 정렬, 복사, JSON 내보내기/가져오기
+// - Tailwind UI 사용 (CDN 또는 빌드 설정 중 하나)
+// - 모달 하단 버튼 sticky 처리 (저장/닫기 항상 보임)
+// - 공유 링크: 현재 목록을 URL에 담아 복사/불러오기
 
 const STORAGE_KEY = "exerciseListV1";
 
+// --- 공유 링크 유틸 ---
+function encodeData(obj) {
+  const json = JSON.stringify(obj);
+  return btoa(unescape(encodeURIComponent(json))); // UTF-8 safe base64
+}
+function decodeData(b64) {
+  const json = decodeURIComponent(escape(atob(b64)));
+  return JSON.parse(json);
+}
+function getQueryParam(key) {
+  const params = new URLSearchParams(window.location.search);
+  return params.get(key);
+}
+function setQueryParam(key, val) {
+  const url = new URL(window.location.href);
+  if (val == null) url.searchParams.delete(key);
+  else url.searchParams.set(key, val);
+  window.history.replaceState({}, "", url.toString());
+}
+
 function uid() {
-  return (
-    Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
-  ).toUpperCase();
+  return (Date.now().toString(36) + Math.random().toString(36).slice(2, 8)).toUpperCase();
 }
 
 function loadData() {
@@ -23,10 +39,8 @@ function loadData() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed;
-  } catch (e) {
-    console.warn("load error", e);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
     return [];
   }
 }
@@ -34,9 +48,7 @@ function loadData() {
 function saveData(list) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-  } catch (e) {
-    console.warn("save error", e);
-  }
+  } catch {}
 }
 
 function Badge({ children }) {
@@ -63,11 +75,7 @@ function Modal({ open, onClose, children, title, footer }) {
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div
-        className="absolute inset-0 bg-black/40"
-        onClick={onClose}
-        aria-hidden
-      />
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} aria-hidden />
       <div className="relative w-[92vw] max-w-xl rounded-2xl bg-white p-5 shadow-xl">
         <div className="mb-3 flex items-center justify-between">
           <h3 className="text-lg font-semibold">{title}</h3>
@@ -79,8 +87,16 @@ function Modal({ open, onClose, children, title, footer }) {
             ✕
           </button>
         </div>
+
+        {/* 스크롤 영역 */}
         <div className="max-h-[70vh] overflow-auto pr-1">{children}</div>
-        {footer && <div className="mt-4 flex justify-end gap-2">{footer}</div>}
+
+        {/* 항상 보이는 하단 고정 버튼 바 */}
+        {footer && (
+          <div className="sticky bottom-0 -mx-5 mt-4 border-t bg-white px-5 pt-3 flex justify-end gap-2">
+            {footer}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -92,7 +108,7 @@ export default function App() {
   const [sortKey, setSortKey] = useState("updatedAt");
   const [selectedId, setSelectedId] = useState(null);
 
-  // 폼 상태 (추가/편집 공용)
+  // 폼 상태
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [title, setTitle] = useState("");
@@ -103,11 +119,31 @@ export default function App() {
 
   useEffect(() => saveData(items), [items]);
 
+  // ✨ 페이지에 ?data= 가 있으면 불러오기 안내
+  useEffect(() => {
+    const q = getQueryParam("data");
+    if (!q) return;
+    try {
+      const incoming = decodeData(q);
+      if (!Array.isArray(incoming)) return;
+      if (confirm("공유 링크에서 데이터를 불러올까요? (현재 목록을 덮어씁니다)")) {
+        setItems(incoming);
+      }
+    } catch (e) {
+      console.warn("링크 데이터 파싱 실패", e);
+    } finally {
+      // 한 번 처리 후 주소 정리
+      setQueryParam("data", null);
+    }
+  }, []);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const base = q
       ? items.filter((it) => {
-          const hay = `${it.title}\n${it.content || ""}\n${it.caution || ""}\n${(it.tags||[]).join(" ")}`.toLowerCase();
+          const hay = `${it.title}\n${it.content || ""}\n${it.caution || ""}\n${
+            (it.tags || []).join(" ")
+          }`.toLowerCase();
           return hay.includes(q);
         })
       : items;
@@ -166,15 +202,7 @@ export default function App() {
       setItems((prev) =>
         prev.map((it) =>
           it.id === editingId
-            ? {
-                ...it,
-                title: t,
-                content,
-                caution,
-                link,
-                tags,
-                updatedAt: now,
-              }
+            ? { ...it, title: t, content, caution, link, tags, updatedAt: now }
             : it
         )
       );
@@ -204,15 +232,6 @@ export default function App() {
     if (selectedId === item.id) setSelectedId(null);
   }
 
-  function copyToClipboard(text) {
-    navigator.clipboard
-      .writeText(text)
-      .then(() => {
-        toast("클립보드에 복사되었습니다.");
-      })
-      .catch(() => alert("복사 실패. 브라우저 권한을 확인하세요."));
-  }
-
   const [toasts, setToasts] = useState([]);
   function toast(msg) {
     const id = uid();
@@ -220,17 +239,19 @@ export default function App() {
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 2000);
   }
 
+  function copyToClipboard(text) {
+    navigator.clipboard
+      .writeText(text)
+      .then(() => toast("클립보드에 복사되었습니다."))
+      .catch(() => alert("복사 실패. 브라우저 권한을 확인하세요."));
+  }
+
   function exportJSON() {
-    const blob = new Blob([JSON.stringify(items, null, 2)], {
-      type: "application/json",
-    });
+    const blob = new Blob([JSON.stringify(items, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `exercise-list-${new Date()
-      .toISOString()
-      .slice(0, 19)
-      .replace(/[:T]/g, "-")}.json`;
+    a.download = `exercise-list-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -243,7 +264,6 @@ export default function App() {
       try {
         const data = JSON.parse(reader.result);
         if (!Array.isArray(data)) throw new Error("형식 오류");
-        // 간단 스키마 체크
         const safe = data
           .filter((d) => d && d.id && d.title)
           .map((d) => ({
@@ -271,13 +291,68 @@ export default function App() {
       <header className="sticky top-0 z-30 border-b bg-white/80 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
           <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gray-900 text-white">🏥</div>
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gray-900 text-white">
+              🏥
+            </div>
             <div>
               <h1 className="text-lg font-semibold leading-tight">운동법 리스트</h1>
               <p className="text-xs text-gray-500">치료 후 자가운동 가이드 관리</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* ✨ 공유 링크 기능 */}
+            <button
+              className="rounded-lg border px-3 py-1.5 text-sm hover:bg-gray-50"
+              onClick={() => {
+                try {
+                  const b64 = encodeData(items);
+                  const url = `${location.origin}${location.pathname}?data=${b64}`;
+                  navigator.clipboard
+                    .writeText(url)
+                    .then(() =>
+                      alert(
+                        "공유 링크를 클립보드에 복사했습니다.\n다른 기기에서 이 링크를 열면 불러올 수 있어요."
+                      )
+                    )
+                    .catch(() => prompt("복사 실패. 아래 주소를 직접 복사하세요:", url));
+                } catch {
+                  alert("링크 만들기에 실패했어요.");
+                }
+              }}
+            >
+              공유 링크 만들기
+            </button>
+
+            <button
+              className="rounded-lg border px-3 py-1.5 text-sm hover:bg-gray-50"
+              onClick={() => {
+                const raw = prompt("공유 링크(URL)를 붙여넣으세요:");
+                if (!raw) return;
+                try {
+                  const u = new URL(raw);
+                  const d = u.searchParams.get("data");
+                  if (!d) {
+                    alert("유효한 공유 링크가 아니에요.");
+                    return;
+                  }
+                  const incoming = decodeData(d);
+                  if (!Array.isArray(incoming)) {
+                    alert("데이터 형식이 올바르지 않아요.");
+                    return;
+                  }
+                  if (confirm("이 링크의 데이터로 현재 목록을 덮어쓸까요?")) {
+                    setItems(incoming);
+                  }
+                } catch {
+                  alert("링크를 읽는 중 오류가 났어요.");
+                }
+              }}
+            >
+              링크에서 불러오기
+            </button>
+
+            {/* 기존: 내보내기/가져오기/새 운동법 */}
             <button
               className="rounded-lg border px-3 py-1.5 text-sm hover:bg-gray-50"
               onClick={exportJSON}
@@ -357,9 +432,7 @@ export default function App() {
                     </div>
                   )}
                   {!!it.content && (
-                    <p className="mt-1 line-clamp-2 text-xs text-gray-600">
-                      {it.content}
-                    </p>
+                    <p className="mt-1 line-clamp-2 text-xs text-gray-600">{it.content}</p>
                   )}
                 </button>
               </li>
@@ -412,7 +485,7 @@ export default function App() {
         </section>
       </main>
 
-      {/* 플로팅 + 버튼 (모바일 우선) */}
+      {/* 플로팅 + 버튼 (모바일) */}
       <button
         onClick={openAdd}
         className="fixed bottom-5 right-5 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-gray-900 text-3xl leading-none text-white shadow-xl hover:brightness-110 md:hidden"
@@ -424,10 +497,7 @@ export default function App() {
       {/* 토스트 */}
       <div className="pointer-events-none fixed inset-x-0 bottom-3 z-50 mx-auto flex max-w-md flex-col gap-2 px-4">
         {toasts.map((t) => (
-          <div
-            key={t.id}
-            className="pointer-events-auto rounded-xl border bg-white px-3 py-2 text-sm shadow"
-          >
+          <div key={t.id} className="pointer-events-auto rounded-xl border bg-white px-3 py-2 text-sm shadow">
             {t.msg}
           </div>
         ))}
@@ -508,7 +578,7 @@ function DetailCard({ item }) {
     <div className="space-y-4">
       <section className="rounded-xl border p-4">
         <div className="mb-2 text-xs text-gray-500">
-          생성 {new Date(item.createdAt).toLocaleString()} · 수정 {" "}
+          생성 {new Date(item.createdAt).toLocaleString()} · 수정{" "}
           {new Date(item.updatedAt).toLocaleString()}
         </div>
         {!!(item.tags && item.tags.length) && (
@@ -521,9 +591,7 @@ function DetailCard({ item }) {
         {item.content ? (
           <div>
             <h3 className="mb-1 text-sm font-semibold">운동 설명</h3>
-            <p className="whitespace-pre-line text-sm leading-6 text-gray-800">
-              {item.content}
-            </p>
+            <p className="whitespace-pre-line text-sm leading-6 text-gray-800">{item.content}</p>
           </div>
         ) : (
           <p className="text-sm text-gray-500">설명이 없습니다.</p>
@@ -533,9 +601,7 @@ function DetailCard({ item }) {
       <section className="rounded-xl border p-4">
         <h3 className="mb-1 text-sm font-semibold">주의사항</h3>
         {item.caution ? (
-          <p className="whitespace-pre-line text-sm leading-6 text-gray-800">
-            {item.caution}
-          </p>
+          <p className="whitespace-pre-line text-sm leading-6 text-gray-800">{item.caution}</p>
         ) : (
           <p className="text-sm text-gray-500">등록된 주의사항이 없습니다.</p>
         )}
@@ -570,17 +636,9 @@ function DetailCard({ item }) {
 function buildShareText(item) {
   const lines = [];
   lines.push(`📌 ${item.title}`);
-  if (item.content) {
-    lines.push("\n운동 설명\n" + item.content);
-  }
-  if (item.caution) {
-    lines.push("\n⚠️ 주의사항\n" + item.caution);
-  }
-  if (item.link) {
-    lines.push("\n🔗 참고 링크\n" + item.link);
-  }
-  if (item.tags && item.tags.length) {
-    lines.push("\n#" + item.tags.join(" #"));
-  }
+  if (item.content) lines.push("\n운동 설명\n" + item.content);
+  if (item.caution) lines.push("\n⚠️ 주의사항\n" + item.caution);
+  if (item.link) lines.push("\n🔗 참고 링크\n" + item.link);
+  if (item.tags && item.tags.length) lines.push("\n#" + item.tags.join(" #"));
   return lines.join("\n");
 }
